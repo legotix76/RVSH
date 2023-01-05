@@ -1,0 +1,981 @@
+#! /bin/bash
+
+# Paramètre du prompt, bloque CTRL-Z et CTRL-C ainsi que l'affichage de ^C, ^Z et tous les autres ^
+
+trap '' 2 20 
+stty -echoctl
+
+admin_connect () {   #permet d'accéder au prompt admin
+	
+	mdp="admin"       #Mot de passe administrateur
+	user="root"
+	machine="hostroot"
+	flag=0
+	essai=3
+	while [[ $flag == 0 && $essai > 0 ]]   # Vérification du mot de passe, 3 essais possibles
+	do
+		echo "Entrez le mot de passe administateur: "
+		stty -echo
+		read password_input
+		stty echo
+		if [ $password_input == $mdp  ] ; then
+			
+			flag=1
+		else	
+			((essai--))
+			echo "Mot de passe administrateur incorrect - $essai essais restants." 
+		fi
+	done
+	if [[ $essai == 0 ]]; then	# Exit si le mot de passe est faux 3 fois
+		echo "Vous n'avez plus d'essai restant."
+		exit 1
+	fi
+	token="admin"
+}
+
+# Supprime une connexion courante dans le la VM choisie
+
+rmv_mot () {
+	tail -n 1 VM/$1 > tempo
+	head -n -1 VM/$1 > tempo2
+	sed -i 's/'$2'\/[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}\://g' VM/$1 tempo
+	cat tempo >> tempo2
+	cat tempo2 > VM/$1
+	rm -f tempo tempo2
+}
+
+# Supprime l'accès à une machine pour un utilisateur particulier
+
+rmv_mot2 () {
+	sed -e 's/'$2'\://g' USERS/$1 > temporair && mv temporair USERS/$1
+	rm -f temporair
+}
+
+# Supprime l'accès à une machine pour tous les utilisateurs
+
+rmv_mot3 () {
+  for i in USERS/*
+  do
+    sed -e 's/'$1'\://g' $i > temporair && mv temporair $i
+  done
+  rm -f temporair
+}
+
+
+# Ces deux fonctions servent à extraire les lignes passées en second argument :
+
+# Celle ci dans le dossier "USERS"
+
+user_ligne () {     # $1 = ID; $2 = ligne
+  laligne=$(sed -n "$2 p" USERS/$1)
+}
+
+# Celle ci dans le dossier "VM"
+
+machine_ligne () {  # $1 = VM, $2 = ligne
+  laligne=$(sed -n "$2 p" VM/$1)
+}
+
+
+# Verifie l'autorisation d'accéder à une machine
+
+vmtest () {
+	flag_vmtest=0
+	IFS=':' read -a listemachine <<< $1
+	for i in ${listemachine[@]}
+	do
+		if [[ $i == $2 ]]; then
+			flag_vmtest=1
+			return 1
+		fi
+	done
+	if [ $flag_vmtest -eq 0 ]; then
+		return 0
+	fi
+}
+
+# Vérifie l'existence d'un utilisateur
+
+usertest () {
+  if [ -e USERS/$1 ]; then
+    return 1
+  else
+    return 0
+  fi
+}
+
+
+# Vérifie l'exitence d'une machine 
+
+vm_existence () {
+  if [ -e VM/$1 ]; then
+    return 1
+  else
+    return 0
+  fi
+}
+
+# Remplace la ligne souhaitée dans le fichier souhaité pour les USERS
+
+add_ligne () {
+  ligne=$(wc -l USERS/$1 | cut -f1 -d" ")
+  head -n $2 USERS/$1 > tempfile1
+  tail -n $(($ligne-$2)) USERS/$1 > tempfile2
+  head -n -1 tempfile1 > temp && mv temp tempfile1
+  echo $3 >> tempfile1
+  cat tempfile2 >> tempfile1
+  cat tempfile1 > USERS/$1
+  rm -f tempfile1 tempfile2 tempfile3 temp
+
+}
+
+# Même objectif que la fonction précédente, ici pour les VM
+
+add_ligne2 () {
+  ligne=$(wc -l VM/$1 | cut -f1 -d" ")
+  head -n $2 VM/$1 > tempfile1
+  tail -n $(($ligne-$2)) VM/$1 > tempfile2
+  head -n -1 tempfile1 > temp && mv temp tempfile1
+  echo $3 >> tempfile1
+  cat tempfile2 >> tempfile1
+  cat tempfile1 > VM/$1
+  rm -f tempfile1 tempfile2 tempfile3 temp
+
+}
+
+# Ajoute un élément en fin de ligne, pour les utilisateurs
+
+add_doc_user () {
+  lignes=$(wc -l USERS/$1 | cut -f1 -d" ")
+  head -n $2 USERS/$1 > tempfile1
+  tail -n $(($lignes-$2)) USERS/$1 > tempfile2
+  tempfile3=$(tail -n 1 tempfile1)
+  head -n -1 tempfile1 > temp && mv temp tempfile1
+  echo -n $3 >> tempfile1
+  echo $tempfile3 >> tempfile1
+  cat tempfile2 >> tempfile1
+  cat tempfile1 > USERS/$1
+  rm -f tempfile1 tempfile2 tempfile3 temp
+
+}
+
+# Ajoute un élément en fin de ligne, pour les VM
+
+add_doc_vm () {
+  lignes=$(wc -l VM/$1 | cut -f1 -d" ")
+  head -n $2 VM/$1 > tempfile1
+  tail -n $(($lignes-$2)) VM/$1 > tempfile2
+  tempfile3=$(tail -n 1 tempfile1)
+  head -n -1 tempfile1 > temp && mv temp tempfile1
+  echo -n $tempfile3 >> tempfile1
+  echo $3 >> tempfile1
+  cat tempfile2 >> tempfile1
+  cat tempfile1 > VM/$1
+  rm -f tempfile1 tempfile2 tempfile3 temp
+
+}
+
+
+
+user_connect () { # connexion au prompt user 
+	trap 2 20 # Reactivation du CTRL+C et CTRL+Z pour sortir si on se trompe
+
+	#VERIF USERS
+
+	user_input=$(echo $2)
+	if [ $(usertest $user_input) $? -eq 1 ] ; then
+		user=$user_input
+
+	else
+		flag_user=0
+		while [ $flag_user == 0  ]
+		do
+			echo "ERREUR dans le nom d'utilisateur, veuillez entrer un identifiant correct : "
+			read user_input
+
+			if [ $(usertest $user_input) $? -eq 1 ] ; then
+
+				user=$user_input
+				flag_user=1
+
+			fi
+
+		done
+	fi
+	
+
+	#VERIF MACHINE
+
+	machine_input=$(echo $1)
+	user_ligne $user 3
+	vm_autor=$laligne
+	
+	if [ $(vmtest $vm_autor $machine_input) $? -eq 1 ] ; then
+		machine=$machine_input
+
+	else
+		
+		flag_vm=0
+		while [ $flag_vm == 0  ]
+		do
+			echo "ERREUR dans le nom de la machine, veuillez entrer une machine correcte : "
+			read machine_input
+
+			if [ $(vmtest $vm_autor $machine_input) $? -eq 1 ] ; then
+
+				machine=$machine_input
+				flag_vm=1
+
+			fi
+
+		done
+	fi
+	
+	# VERIF Mot de passe
+	
+	user_ligne $user 2
+	mdp=$laligne
+	flag=0	
+	essai=3
+	
+	while [[ $flag == 0 && $essai > 0 ]]   
+	do
+		echo "Entrez le mot de passe : "
+		stty -echo
+		read password_input
+		stty echo
+		if [ $password_input == $mdp  ] ; then
+			
+			flag=1
+		else	
+			((essai--))
+			echo "Mot de passe incorrect - $essai essais restants." 
+		fi
+	done
+	if [[ $essai == 0 ]]; then
+		echo "Vous n'avez plus d'essai restant."
+		exit 1
+	fi
+	if [[ $machine != $(tail -n 1 USERS/$user | cut -f1 -d ":") ]]; then
+		add_doc_user $user 5 "$machine:"
+	fi
+	dat=$(date +%Y-%m-%d)
+	add_doc_vm $machine 2 "$user/$dat:"
+	token=$user
+	trap '' 2 20 # Nouvelle désactivation du CTRL + C et CTRL + Z
+}
+
+# liste les machines disponibles:
+
+rhost (){
+
+	ls VM
+
+
+}
+
+# Modification du mot de passe par un utilisateur
+
+passwd (){
+	
+	user_ligne $user 2
+	mdp=$laligne
+	flag=0
+	essai=3
+	while [[ $flag == 0 && $essai > 0 ]]
+	do
+		echo "Entrez le mot de passe actuel : "
+		stty -echo
+		read password_input
+		stty echo
+		if [ $password_input == $mdp  ] ; then
+			
+			flag=1
+			echo "Nouveau mot de passe: "
+			stty -echo
+			read new_mdp
+			stty echo
+			add_ligne $user 2 $new_mdp
+			echo ok
+		else	
+			((essai--))
+			echo "Mot de passe incorrect - $essai essais restants." 
+		fi
+	done
+	if [[ $essai == 0 ]]; then
+		echo "Vous n'avez plus d'essai restant."
+	fi
+}
+
+# Permet de lire le contenu du finger de l'utilisateur 
+
+finger (){
+
+
+	user_ligne $user 4
+	
+	nom=$(echo $laligne | cut -d ':' -f1)	
+	prenom=$(echo $laligne | cut -d ':' -f2)
+	phone=$(echo $laligne | cut -d ':' -f3)
+	mail=$(echo $laligne | cut -d ':' -f4)
+	
+ 
+	echo " NOM : $nom  "	
+	echo " PRENOM : $prenom " 
+	echo " NUMERO DE TELEPHONE : $phone " 
+	echo " MAIL : $mail " 
+
+}
+
+# Renvoie les connexions à la machine, avec la date de connexion
+
+who (){
+
+	machine_ligne $machine 2
+	echo $laligne
+
+}
+
+# Renvoie toutes les connexions répertoriées
+
+rusers () {
+	c=2
+	for f in VM/*
+		do
+    		n=0
+    		while [[ $c > 1 ]]
+    		do
+      			((n++))
+      			e1=$(tail -n 1 $f | cut -f$n -d":" | cut -f1 -d"/")
+      			e2=$(tail -n 1 $f | cut -f$n -d":" | cut -f2 -d"/")
+      			e3=$(head -n 1 $f)
+      			c=$(echo $e1 | wc -c)
+      			if [[ $c > 1 ]]; then
+        			echo "L'utilisateur $e1 s'est connecte à la machine $e3 le $e2"
+      			fi
+    		done
+    		((c++))
+  	done
+}
+
+
+
+#   COMMANDES ADMINS : 
+
+
+# manage les machine $1 : parametre ; $2 : machine
+
+host () {
+	
+	case $1 in
+		"-r")
+			if [ $(vm_existence $2) $? -eq 1 ] ; then
+				rm -v VM/$2
+				rmv_mot3 $2
+
+			else
+				echo "La machine saisie n'existe pas."
+
+			fi
+
+			;;
+		"-a")
+			flag=0
+			vm_a_verif="vm-1"
+			i=1
+			while [ $flag == 0  ]
+			do
+				if [ $(vm_existence $vm_a_verif) $? -eq 1 ] ; then
+					
+					((i++))
+					vm_a_verif="vm-$i"
+
+				else
+					touch VM/$vm_a_verif
+					add_ligne2 $vm_a_verif 1 $vm_a_verif
+					echo "" >> VM/$vm_a_verif
+					echo "Opération effectuée, nouvelle machine : $vm_a_verif"
+					flag=1
+
+				fi
+
+			done
+			;;
+		*)	
+			echo "USAGE: host [-a/-r]  [machine-id]"
+			;;
+	esac
+	
+
+}
+
+# Affiche le contenu du finger de l'utilisateur désigné, puis permet à l'administrateur d'en changer le contenu 
+
+afinger (){
+	
+	echo $1
+
+	if [ $( usertest $1) $? -eq 1 ] ; then
+		
+		echo "Informations actuelles de $1"	
+		user_ligne $1 4
+		
+		nom=$(echo $laligne | cut -d ':' -f1)	
+		prenom=$(echo $laligne | cut -d ':' -f2)
+		phone=$(echo $laligne | cut -d ':' -f3)
+		mail=$(echo $laligne | cut -d ':' -f4)
+	
+ 
+		echo " NOM : $nom  "	
+		echo " PRENOM : $prenom " 
+		echo " NUMERO DE TELEPHONE : $phone " 
+		echo " MAIL : $mail " 
+
+		echo " "
+		echo "Veuillez saisir les nouvelles informations de l'utilisateur $1 : "
+		echo "NOM : "
+		read nom
+		echo "PRENOM : "
+		read prenom
+		echo " TELEPHONE : "
+		read phone
+		echo "MAIL : "
+		read mail
+
+		to_add=$nom:$prenom:$phone:$mail:
+		add_ligne $1 4 $to_add
+
+		echo "Les informations de $1 ont été changées avec succès !"
+		
+
+	else
+		echo "Nom d'utilisateur incorrect"
+
+	fi
+
+
+}
+
+# Fonction permettant de gérer les utilisateurs du réseau selon 4 paramètres différents: modidication des autorisations, changement de mot de passe, suppression d'utilisateur et création d'un profil utilisateur
+
+user (){
+	
+	echo "OPTION : $1"
+	echo "USER : $2"
+	
+	if [ $(usertest $2 ) $? -eq 1  ] ; then
+	
+
+		case $1 in
+			"-r")
+				
+				echo "Machines actuellement autorisées : "
+				user_ligne $2 3
+				echo $laligne
+				echo "(Ces machines seront automatiquement supprimées à la fin de l'opération)"
+				echo "A combien de machines l'utilisateur doit-il avoir accès :  "
+				read total
+					
+				echo $total
+				echo "Machines en service : "
+				rhost
+				final=""
+				for (( i=1; i<=$total; i++))
+				do
+					
+					flag=0
+					while [ $flag == 0 ]	
+					do
+						echo "Machine $i : "
+						read M
+						if [ $(vm_existence $M) $? -eq 1 ]  ; then
+							
+							final=$final$M:
+							flag=1
+						else
+							echo "ID de machine incorrect"
+						fi
+					done
+
+
+				done
+
+				add_ligne $2 3 $final
+				;;
+			"-p")
+				
+				echo "Nouveau mot de passe pour $2 : "
+				stty -echo
+				read new_mdp
+				stty echo
+				add_ligne $2 2 $new_mdp
+				echo ok
+				;;
+
+
+
+			"-s")
+				rm USERS/$2
+				;;
+
+
+			"-a")	
+				flag=0
+				user_a_verif="user-1"
+				i=1
+				while [ $flag == 0  ]
+				do
+					if [ $(usertest $user_a_verif) $? -eq 1 ] ; then
+					
+						((i++))
+						user_a_verif="user-$i"
+		
+					else
+						touch USERS/$user_a_verif
+						echo "Opération effectuée, nouvel utilisateur : $user_a_verif"
+						flag=1
+
+					fi
+
+				done
+				add_ligne $user_a_verif 1 " "
+				add_ligne $user_a_verif 2 " "
+				add_ligne $user_a_verif 3 " "
+				add_ligne $user_a_verif 4 " "
+				echo "" >> USERS/$user_a_verif
+
+				afinger $user_a_verif
+
+				add_ligne $user_a_verif 1 $user_a_verif
+				
+				echo "Mot de passe: "
+				read new_mdp
+				add_ligne $user_a_verif 2 $new_mdp
+
+				
+				echo "A combien de machines l'utilisateur doit-il avoir accès :  "
+				read total
+					
+				echo $total
+				echo "Machines en service : "
+				rhost
+				final=""
+				for (( i=1; i<=$total; i++))
+				do
+					
+					flag=0
+					while [ $flag == 0 ]	
+					do
+						echo "Machine $i : "
+						read M
+						if [ $(vm_existence $M) $? -eq 1 ]  ; then
+							
+							final=$final$M:
+							flag=1
+						else
+							echo "ID de machine incorrect"
+						fi
+					done
+
+
+				done
+
+				add_ligne $user_a_verif 3 $final
+				;;
+			*)
+				echo USAGE
+				;;
+
+	
+
+		
+		esac
+
+
+	else
+
+		echo ERREUR
+	fi
+	
+}
+
+# Affiche la liste des commandes possibles
+
+aide () {
+	
+	echo " "
+	echo "MODE USER : "
+	echo " "
+
+	echo "who : Affiche qui est connecté sur la machine. Renvoie le nom, l’heure et la date de connexion de tous les utilisateurs"
+	echo "rusers :  Affiche qui est connecté sur le réseau. Renvoie le nom de chaque utilisateur, le nom de la machine sur laquelle il est connecté, l’heure et la date de la connexion"
+	echo "rhost : Affiche la liste des machines présentes sur le réseau virtuel "
+	echo "rconnect nom_machine : Permet de changer de machine"
+	echo "su nom_utilisateur : Permet de changer de compte"
+	echo "passwd : Permet de changer de mot de passe "
+	echo "finger : Infomations du profil " 
+	echo "write nom_utilisateur@nom_machine message : Envoie un message à un utilisateur connecté "
+	echo "exit : Reconnexion sur la dernière machine"
+	echo "quit : Permet de se déconnecet du réseau"
+ 	
+	echo " "
+	echo "MODE ADMIN : "
+	echo " "
+
+	echo "host [-a/-r] [machine_id] : supprime la machine, ajoute une machine"
+	echo "user [-r/-p/-s/-a] [user_id] : change les droits, le mot de passe, supprime ou crée un utilisateur"
+	echo "wall [-n] message : Envoie un message global (-n) ou non aux utilisateurs du réseaux"
+	echo "afinger user_id : Permet de changer les informations d'un utilisateur "
+
+
+}
+
+# Permet de lire la première entrée utilisateur pour initialiser le programme
+
+case $1 in
+
+	"-admin")
+		admin_connect
+		;;
+	"-connect")
+		if [[ $# == 3 ]]; then
+			user_connect $2 $3
+		else
+			echo "Usage : bash rvsh -connect nom_machine nom_utilisateur"
+			exit
+		fi
+		;;
+	*)
+		echo -e "Usage admin : bash rvsh -admin\nUsage user : bash rvsh -connect nom_machine nom_utilisateur"
+		exit 1
+		;;
+esac
+
+# Permet de revenir a la machine précédente et/ou de se déconnecter
+
+exit1 () {
+        d=$(tail -n 1 USERS/$1 | cut -f1 -d ":")
+        tail -n 1 USERS/$1 > tempo
+        head -n -1 USERS/$1 > tempo2
+        sed -i 's/^'$d'\://g' tempo
+        cat tempo >> tempo2
+        cat tempo2 > USERS/$1
+        rm -f tempo tempo2
+        d=$(tail -n 1 USERS/$1 | cut -f1 -d ":")
+        if [ $(echo $d | wc -c) -eq 1 ]; then
+                echo "Voulez vous vraiment quitter ? [O/N]"
+		read input
+		if [[ $input == "o" || $input == "O" ]]; then
+			rmv_mot $machine $user
+			exit
+		fi
+        else
+                tail -n 1 USERS/$1 > tempo
+        	head -n -1 USERS/$1 > tempo2
+	        sed -i 's/^'$d'\://g' tempo
+	        cat tempo >> tempo2
+	        cat tempo2 > USERS/$1
+	        rm -f tempo tempo2
+	        rmv_mot $machine $1
+                user_connect $d $1
+        fi
+}
+
+# FONCTION USER: Envoie un message à un autre utilisateur
+
+write () {
+	usr=$(echo $3 | cut -f1 -d '@')
+	if [ $(usertest $usr) $? -eq 1 ]; then	# teste si l'utilisateur existe
+		user_ligne $usr 3
+		vm_autor=$laligne
+		vm=$(echo $3 | cut -f2 -d '@')
+		if [ $(vmtest $vm_autor $vm) $? -eq 1 ]; then # teste s'il a accès a la machine ou on lu ienvoie le message
+			echo -n "$3 $1 vous a envoyé ce message depuis $2 : " >> messagerie
+			n=3
+			for i in $* # Permet d'obtenir un message composé de plusieurs mots
+			do
+			  	if [[ $n -eq 0 ]]; then
+			  		echo -n "$i " >> messagerie
+			  	else
+			  		((n--))
+			  	fi
+			done
+			echo "" >> messagerie # Met un retour a la ligne a la fin du message
+		else
+			echo "write : l'utilisateur n'a pas acces a cette machine."
+		fi
+	else
+		echo "write : l'utilisateur n'existe pas"
+	fi
+	rm -f vvv
+}
+
+# FONCTION ADMIN: Envoie un message à tous les utilisateurs
+
+wall () {
+        if [[ $1 == "-n" ]]; then
+                for i in USERS/*	# Parcours la liste des utilisateurs pour envoyer un message a tous
+                do
+                        nam=$(head -n 1 $i | cut -f1 -d " ")
+                        echo -n "$nam Admin : " >> messagerie_admin
+                        n=1
+                        for i in $*
+                        do
+                                if [[ $n -eq 0 ]]; then 	# Permet de passer les premiers arguments qui ne sont pas un message
+                                        echo -n "$i " >> messagerie_admin
+                                else
+                                        ((n--))
+                                fi
+                        done
+                        echo "" >> messagerie_admin     # Met un retour a la ligne a la fin
+                done
+        else
+                for i in USERS/*	# Parcours la liste des utilisateurs pour envoyer un message a tous
+                do
+                        flag1=0
+                        nam=$(head -n 1 $i | cut -f1 -d " ") 
+                        c=2
+                        for f in VM/*
+                        do
+                                n=0
+                                while [[ $c > 1 ]]	# Tant qu'il y a un utilisateur
+                                do
+                                        ((n++))
+                                        e1=$(tail -n 1 $f | cut -f$n -d":" | cut -f1 -d"/")
+                                        c=$(echo $e1 | wc -c)
+                                        if [[ $e1 == $nam ]]; then	# Vérifie si l'utilisateur est bien connecté
+                                                flag1=1
+                                        fi
+                                done
+                                ((c++))
+                        done
+                        if [ $flag1 -eq 1 ]; then
+                                echo -n "$nam Admin : " >> messagerie_admin
+                                for i in $*
+                                do
+                                        echo -n "$i " >> messagerie_admin
+                                done
+                                echo "" >> messagerie_admin
+                        fi
+                done
+        fi
+        rm -f vvv
+}
+
+# Lit les commandes entrées par l'utilisateur, vérifie à chaque nouvelle commande entrée que la session (user/machine) est belle est bien autorisée
+
+while true;
+do
+	if [[ $token == "admin" ]] ; then
+		echo -n ""      #VERIF MACHINE
+	else
+		if [ $(vm_existence $machine) $? -eq 0  ] ; then
+		
+			rmv_mot2 $user $machine
+			exit
+		fi
+				#VERIF USER
+	
+		if [ $(usertest $user) $? -eq 0 ] ; then
+			
+			exit
+	
+		fi
+	fi
+	
+	# Permet de savoir si un utilisateur a un message en attente de la part de l'administrateur du réseau, et si oui lui affiche
+	
+	if [[ $(cat messagerie_admin | cut -f1 -d ' ' | wc -c) != 0 ]]; then
+		while read z
+		do
+			if [[ $user == $(echo $z | cut -f1 -d ' ') ]]; then
+				x=$(echo $z | cut -f1 -d ' ')
+				echo $z | sed 's/'$x\ '//g'
+				sed -i '/'$x'/d' messagerie_admin
+			fi
+		done < messagerie_admin
+	fi
+	
+	# Permet de savoir si un utilisateur a un message en attente, et si oui lui affiche
+	
+	if [[ $(cat messagerie | cut -f1 -d ' ' | wc -c) != 0 ]]; then
+		while read z
+		do
+			if [[ $user == $(echo $z | cut -f1 -d ' ' | cut -f1 -d'@') && $machine == $(echo $z | cut -f1 -d ' ' | cut -f2 -d'@') ]]; then
+				x=$(echo $z | cut -f1 -d ' ')
+				echo $z | sed 's/'$x\ '//g'
+				sed -i '/'$x'/d' messagerie
+			fi
+		done < messagerie
+	fi
+		
+# Liste les commandes effectuées selon ce que tape l'utilisateur dans le terminal
+
+	echo -n "$user@$machine > "
+	read input
+	if [ -z $(echo $input | cut -f1 -d' ') ]; then	# Empêche la console de planter lorsque rien n'est écrit dans le terminal
+		flag_input=1
+	fi
+	case $input in
+
+		"rhost")
+			rhost
+			;;
+		"help")
+			aide
+			;;
+
+		"passwd")
+			if [ $token != "admin" ] ; then
+				passwd
+			else
+				echo "Le mot de passe administrateur demeure immuable."
+			fi
+			;;
+
+		"finger")
+			if [ $token != "admin" ] ; then
+				finger
+			else
+				echo "Vous êtes admin, vous n'avez pas de finger."
+			fi
+			;;
+		"who")
+			if [ $token != "admin" ] ; then
+				who
+			else
+				echo "Vous êtes le seul admin sur le hostroot"
+			fi
+			;;
+		"rusers")
+			rusers
+			;;
+		"exit")
+			if [ $token != "admin" ] ; then
+				exit1 $user
+			else
+				echo "Vous n'avez accès qu'au hostroot. Tapez \"quit\" pour quitter"
+			fi
+			;;
+		$(echo $input | grep ^su ))
+			if [[ $flag_input -eq 0 ]]; then	# Empêche la console de planter
+				if [ $token != "admin" ] ; then
+					vv=$(echo $input | cut -d' ' -f2)
+					if [[ $(echo $input | cut -d' ' -f3 | wc -c) > 1 ]]; then
+						echo "USAGE : su nom_utilisateur"
+					else
+						rmv_mot $machine $user
+						user_connect $machine $vv
+					fi
+				else
+					echo "Seul l'administrateur a accès au hostroot."
+				fi
+			else
+				flag_input=1
+			fi
+			;;
+			
+		$(echo $input | grep ^rconnect ))
+			if [ $token != "admin" ] ; then
+				vv=$(echo $input | cut -d' ' -f2)
+				if [[ $(echo $input | cut -d' ' -f3 | wc -c) > 1 ]]; then
+					echo "USAGE : rconnect nom_machine"
+				else
+					rmv_mot $machine $user
+					user_connect $vv $user
+				fi
+			else
+				echo "L'administrateur ne peut se connecter qu'au hostroot."
+			fi
+			;;
+		$(echo $input | grep ^write ))
+			vv=$(echo $input | cut -d' ' -f2)
+			if [[ $(echo $input | wc -c) = 6 ]]; then
+				echo "USAGE : write nom_utilisateur@nom_machine message"
+			else
+				n=3
+				c=2
+				while [[ $c > 1 ]]
+				do
+					m=$(echo $input | cut -f$n -d' ')
+					echo -n "$m " >> vvv 
+					((n++))
+					c=$(echo $m | wc -c)
+				done
+				echo "" >> vvv
+				write $user $machine $vv $(cat vvv)
+			fi
+			;;
+		$(echo $input | grep ^wall ))
+		 	if [ $token == "admin" ] ; then
+				if [[ $(echo $input | wc -c) != 5 ]]; then
+					vv=$(echo $input | cut -d' ' -f2)
+					n=3
+					c=2
+					while [[ $c > 1 ]]
+					do
+						m=$(echo $input | cut -f$n -d' ')
+						echo -n "$m " >> vvv 
+						((n++))
+						c=$(echo $m | wc -c)
+					done
+					echo "" >> vvv
+					wall $vv $(cat vvv)
+				else
+					echo "USAGE : wall (-n) message"
+				fi
+			else
+				echo "Vous n'avez pas les autorisations d'administrateur !"
+			
+			fi
+			;;
+		$(echo $input | grep ^host ))
+		 	if [ $token == "admin" ] ; then
+				
+				parametre=$(echo $input | cut -d' ' -f2)
+				machine_id=$(echo $input | cut -d' ' -f3)
+				host $parametre $machine_id
+			else
+				echo "Vous n'avez pas les autorisations d'administrateur !"
+			
+			fi
+			;;	
+		$(echo $input | grep ^afinger ))
+		 	if [ $token == "admin" ] ; then
+				
+				user_in=$(echo $input | cut -d' ' -f2)
+				afinger $user_in
+			else
+				echo "Vous n'avez pas les autorisations d'administrateur !"
+			
+			fi
+			;;
+		$(echo $input | grep ^user ))
+		 	if [ $token == "admin" ] ; then
+				
+				option=$(echo $input | cut -d' ' -f2)
+				user_id=$(echo $input | cut -d' ' -f3)
+				user $option $user_id
+			else
+				echo "Vous n'avez pas les autorisations d'administrateur !"
+			
+			fi
+			;;
+		"quit")
+			if [ $token == "admin" ] ; then
+				exit 1
+			else
+				rmv_mot $machine $user
+				exit 1
+			fi
+			;;
+				       
+		*)
+			echo "USAGE: Entrez help pour obtenir la liste des commandes disponibles"
+			;;
+
+	esac
+
+done
+trap 2 20
+exit
